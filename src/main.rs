@@ -9,11 +9,8 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                println!("accepted new connection");
-                // println!("{:#?}", _stream);
-                match _stream.write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes()) {
-                    Ok(_) => println!("answer ok"),
-                    Err(e) => println!("error: {}", e),
+                if let Err(e) = _stream.write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes()) {
+                    println!("error: {}", e);
                 }
             }
             Err(e) => {
