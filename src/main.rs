@@ -1,7 +1,20 @@
 use std::{
     io::{BufRead, BufReader, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
+
+fn handle_connection(mut stream: TcpStream) {
+    let response = "HTTP/1.1 200 OK\r\n\r\n".as_bytes();
+    let buf_readr = BufReader::new(&stream);
+    let _request: Vec<_> = buf_readr
+        .lines()
+        .map(|line| line.unwrap())
+        .take_while(|line| !line.is_empty())
+        .collect();
+    if let Err(e) = stream.write_all(response) {
+        println!("Error stream writer: {}", e);
+    }
+}
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -12,15 +25,7 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                for header in BufReader::new(&mut _stream).lines() {
-                    let header = header.unwrap();
-                    if header == "\r" {
-                        break;
-                    }
-                }
-                if let Err(e) = _stream.write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes()) {
-                    println!("error: {}", e);
-                }
+                handle_connection(_stream);
             }
             Err(e) => {
                 println!("error: {}", e);
