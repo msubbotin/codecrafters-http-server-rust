@@ -10,7 +10,7 @@ fn main() {
         match stream {
             Ok(mut _stream) => {
                 println!("accepted new connection");
-                println!("{:#?}", _stream);
+                // println!("{:#?}", _stream);
                 match _stream.write("HTTP/1.1 200 OK\r\n\r\n".as_bytes()) {
                     Ok(_) => println!("answer ok"),
                     Err(e) => println!("error: {}", e),
