@@ -4,13 +4,28 @@ use std::{
 };
 
 fn handle_connection(mut stream: TcpStream) {
-    let response = "HTTP/1.1 200 OK\r\n\r\n".as_bytes();
     let buf_readr = BufReader::new(&stream);
-    let _request: Vec<_> = buf_readr
+    let _request: Vec<String> = buf_readr
         .lines()
         .map(|line| line.unwrap())
         .take_while(|line| !line.is_empty())
         .collect();
+
+    let path_line: &str = _request
+        .iter()
+        .filter(|line| line.starts_with("GET"))
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+
+    // println!("Request: {:#?}", _request);
+    // println!("Path: {:#?}", path);
+    let response = match path_line {
+        "/" => "HTTP/1.1 200 OK\r\n\r\n".as_bytes(),
+        _ => "HTTP/1.1 404 Not Found\r\n\r\n".as_bytes(),
+    };
     if let Err(e) = stream.write_all(response) {
         println!("Error stream writer: {}", e);
     }
