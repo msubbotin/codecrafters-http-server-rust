@@ -1,3 +1,4 @@
+use std::thread;
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -20,20 +21,24 @@ fn parse_path(lines: &Vec<String>) -> Option<Request> {
         .filter(|line| line.starts_with("User-Agent"))
         .map(|line| line.split_whitespace())
         .flatten()
-        .map(|value| String::from(value))
+        .map_into()
         .nth(1);
-    if let Some(line) = lines.first() {
-        if let [request_type, path] = line.split_whitespace().collect_vec().as_slice()[0..=1] {
-            let path = String::from(path.split_once('/').unwrap_or_default().1);
-            return match request_type {
-                "GET" => Some(Request::GET {
-                    path: path,
-                    user_agent: user_agent,
-                }),
-                "POST" => Some(Request::POST(path)),
-                _ => None,
-            };
-        }
+
+    let request_path: Vec<&str> = lines
+        .first()
+        .map(|line| line.split_whitespace().collect_vec())
+        .unwrap_or_default();
+
+    if let [type_request, _path] = request_path.as_slice()[..2] {
+        let path = String::from(_path.split_once('/').unwrap_or_default().1);
+        return match type_request {
+            "GET" => Some(Request::GET {
+                path: String::from(path),
+                user_agent: user_agent,
+            }),
+            "POST" => Some(Request::POST(String::from(path))),
+            _ => None,
+        };
     }
     None
 }
@@ -97,7 +102,7 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                handle_connection(_stream);
+                thread::spawn(|| handle_connection(_stream));
             }
             Err(e) => {
                 println!("error: {}", e);
