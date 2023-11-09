@@ -32,7 +32,7 @@ fn make_responce(request: Option<Request>) -> Option<String> {
             if path.starts_with("echo") {
                 match path.split_once('/') {
                     Some(("echo", other)) => Some(format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{}\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
                     other.len(),
                     other
                     
