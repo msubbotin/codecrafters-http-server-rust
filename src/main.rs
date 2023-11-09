@@ -11,6 +11,7 @@ enum Request {
 }
 
 fn parse_path(lines: &Vec<String>) -> Option<Request> {
+    println!("{:?}", lines);
     if let Some(line) = lines.first() {
         if let [request_type, path] = line.split_whitespace().collect_vec().as_slice()[0..=1] {
             let path = String::from(path.split_once('/').unwrap_or_default().1);
@@ -26,7 +27,6 @@ fn parse_path(lines: &Vec<String>) -> Option<Request> {
 
 fn make_responce(request: Option<Request>) -> Option<String> {
     println!("{:?}", request);
-
     match request {
         Some(Request::GET(path)) => {
             if path.starts_with("echo") {
