@@ -5,48 +5,49 @@ use std::{
 
 use itertools::Itertools;
 #[derive(Debug)]
-struct Request {
-    request_type: String,
-    path: Vec<String>,
+enum Request {
+    GET(String),
+    POST(String),
 }
 
 fn parse_path(lines: &Vec<String>) -> Option<Request> {
     if let Some(line) = lines.first() {
         if let [request_type, path] = line.split_whitespace().collect_vec().as_slice()[0..=1] {
-            return Some(Request {
-                request_type: String::from(request_type),
-                path: path
-                    .split('/')
-                    .skip(1)
-                    .map(|value| String::from(value))
-                    .collect_vec(),
-            });
+            let path = String::from(path.split_once('/').unwrap_or_default().1);
+            return match request_type {
+                "GET" => Some(Request::GET(path)),
+                "POST" => Some(Request::POST(path)),
+                _ => None,
+            };
         }
     }
     None
 }
 
 fn make_responce(request: Option<Request>) -> Option<String> {
-    if request.is_none() {
-        return None;
-    }
-    let value = request.unwrap();
-    println!("{value:?}");
-    if value.path.len() < 1 {
-        return None;
-    }
-    let main_path = value.path[0].as_str();
-    return match main_path {
-        "echo" => {
-            if let Some(v) = value.path.get(1) {
-                Some(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{}\r\n\r\n", v.as_bytes().len(), v))
+    println!("{:?}", request);
+
+    match request {
+        Some(Request::GET(path)) => {
+            if path.starts_with("echo") {
+                match path.split_once('/') {
+                    Some(("echo", other)) => Some(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{}\r\n\r\n",
+                    other.len(),
+                    other
+                    
+                )),
+                    None => None,
+                    _ => None,
+                }
+            } else if path.is_empty() {
+                Some(String::from("HTTP/1.1 200 OK\r\n\r\n"))
             } else {
                 None
             }
         }
-        "" => Some(String::from("HTTP/1.1 200 OK\r\n\r\n")),
         _ => None,
-    };
+    }
 }
 
 fn handle_connection(mut stream: TcpStream) {
