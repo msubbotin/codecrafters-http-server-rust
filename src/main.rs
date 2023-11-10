@@ -67,6 +67,16 @@ fn make_responce(request: Option<Request>) -> Option<String> {
                 } else {
                     None
                 }
+            } else if path.starts_with("files") {
+                match path.split_once('/') {
+                    Some(("files", other)) => Some(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
+                    other.len(),
+                    other
+                )),
+                    None => None,
+                    _ => None,
+                }
             } else if path.is_empty() {
                 Some(String::from("HTTP/1.1 200 OK\r\n\r\n"))
             } else {
