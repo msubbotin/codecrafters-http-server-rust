@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::Read;
 use std::{env, fs, thread};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -6,6 +7,7 @@ use std::{
 };
 
 use itertools::Itertools;
+use nom::AsBytes;
 #[derive(Debug)]
 enum Request {
     GET {
@@ -14,11 +16,19 @@ enum Request {
     },
     POST {
         path: String,
-        body: String,
+        body: Vec<u8>,
     },
 }
 
-fn parse_request(lines: &Vec<String>) -> Option<Request> {
+fn parse_request(stream: &mut TcpStream) -> Option<Request> {
+    let reader = BufReader::new(stream.try_clone().unwrap());
+
+    let lines: Vec<String> = reader
+        .lines()
+        .map(|line| line.unwrap())
+        .take_while(|line| !line.is_empty())
+        .collect();
+
     println!("lines: {:?}", lines);
     let user_agent: Option<String> = lines
         .iter()
@@ -40,10 +50,24 @@ fn parse_request(lines: &Vec<String>) -> Option<Request> {
                 path: String::from(path),
                 user_agent,
             }),
-            "POST" => Some(Request::POST {
-                path: String::from(path),
-                body: lines.iter().skip(4).join("\n\r"),
-            }),
+            "POST" => {
+                let body_length: usize = lines
+                    .iter()
+                    .filter(|line| line.starts_with("Content-Length"))
+                    .map(|line| line.split_whitespace())
+                    .flatten()
+                    .map(|value| value.parse::<usize>().unwrap())
+                    .nth(1)
+                    .unwrap_or_default();
+                let mut buffer = vec![0; body_length];
+                let mut reader = BufReader::new(stream);
+                reader.read_exact(&mut buffer).unwrap(); //New Vector with size of Content
+
+                Some(Request::POST {
+                    path: String::from(path),
+                    body: buffer,
+                })
+            }
             _ => None,
         };
     }
@@ -85,7 +109,7 @@ fn get_response(path: String, dir_path: &String, user_agent: Option<String>) -> 
     }
 }
 
-fn post_response(path: String, dir_path: &String, body: String) -> Option<String> {
+fn post_response(path: String, dir_path: &String, body: Vec<u8>) -> Option<String> {
     match path.split_once('/') {
         Some(("files", file_name)) => {
             let file = File::create(format!("{}/{}", dir_path, file_name));
@@ -111,12 +135,7 @@ fn make_response(request: Option<Request>, dir_path: &String) -> Option<String> 
 }
 
 fn handle_connection(mut stream: TcpStream, dir_path: &String) {
-    let request: Vec<String> = BufReader::new(&stream)
-        .lines()
-        .map(|line| line.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
-    let response = match make_response(parse_request(&request), dir_path) {
+    let response = match make_response(parse_request(&mut stream), dir_path) {
         Some(_response) => _response,
         None => String::from("HTTP/1.1 404 Not Found\r\n\r\n"),
     };
