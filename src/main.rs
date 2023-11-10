@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::{env, fs, thread};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -11,11 +12,14 @@ enum Request {
         path: String,
         user_agent: Option<String>,
     },
-    POST(String),
+    POST {
+        path: String,
+        body: String,
+    },
 }
 
-fn parse_path(lines: &Vec<String>) -> Option<Request> {
-    println!("{:?}", lines);
+fn parse_request(lines: &Vec<String>) -> Option<Request> {
+    println!("lines: {:?}", lines);
     let user_agent: Option<String> = lines
         .iter()
         .filter(|line| line.starts_with("User-Agent"))
@@ -34,62 +38,73 @@ fn parse_path(lines: &Vec<String>) -> Option<Request> {
         return match type_request {
             "GET" => Some(Request::GET {
                 path: String::from(path),
-                user_agent: user_agent,
+                user_agent,
             }),
-            "POST" => Some(Request::POST(String::from(path))),
+            "POST" => Some(Request::POST {
+                path: String::from(path),
+                body: lines.iter().skip(4).join("\n\r"),
+            }),
             _ => None,
         };
     }
     None
 }
 
-fn make_responce(request: Option<Request>, dir_path: &String) -> Option<String> {
-    println!("{:?}", request);
-    match request {
-        Some(Request::GET { path, user_agent }) => {
-            if path.starts_with("echo") {
-                match path.split_once('/') {
-                    Some(("echo", other)) => Some(format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
-                    other.len(),
-                    other
-                )),
-                    None => None,
-                    _ => None,
-                }
-            } else if path.starts_with("user-agent") {
-                if let Some(_user_agent) = user_agent {
-                    Some(format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
-                        _user_agent.len(),
-                        _user_agent
-                    ))
-                } else {
-                    None
-                }
-            } else if path.starts_with("files") {
-                match path.split_once('/') {
-                    Some(("files", other)) => {
-                        if let Ok(_content) = fs::read_to_string(format!("{}/{}", dir_path, other))
-                        {
-                            Some(format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
-                                _content.len(),
-                                _content
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                    None => None,
-                    _ => None,
-                }
-            } else if path.is_empty() {
-                Some(String::from("HTTP/1.1 200 OK\r\n\r\n"))
+fn ok_response(content: String, content_type: &str) -> Option<String> {
+    let mut responce = String::new();
+    responce.push_str("HTTP/1.1 200 OK\r\nContent-Type: ");
+    responce.push_str(content_type);
+    responce.push_str("\r\nContent-Length: ");
+    responce.push_str(content.len().to_string().as_str());
+    if content.len() != 0 {
+        responce.push_str("\r\n\r\n");
+        responce.push_str(content.as_str());
+    }
+    responce.push_str("\r\n\r\n");
+    Some(responce)
+}
+
+fn get_response(path: String, dir_path: &String, user_agent: Option<String>) -> Option<String> {
+    if path.is_empty() {
+        return ok_response(String::new(), "text/plain");
+    }
+
+    match path.split_once('/') {
+        Some(("echo", other)) => ok_response(other.to_string(), "text/plain"),
+        Some(("user-agent", _)) => ok_response(user_agent.unwrap_or_default(), "text/plain"),
+        Some(("files", file_name)) => {
+            let file = fs::read_to_string(format!("{}/{}", dir_path, file_name));
+            if let Ok(_content) = file {
+                ok_response(_content, "application/octet-stream")
             } else {
                 None
             }
         }
+        _ => None,
+    }
+}
+
+fn post_response(path: String, dir_path: &String, body: String) -> Option<String> {
+    match path.split_once('/') {
+        Some(("files", file_name)) => {
+            let file = File::create(format!("{}/{}", dir_path, file_name));
+            if let Err(_) = file.unwrap().write_all(body.as_bytes()) {
+                None
+            } else {
+                Some(String::from(
+                    "HTTP/1.1 201 OK\r\nContent-Type: text/plain\r\n\r\n",
+                ))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn make_response(request: Option<Request>, dir_path: &String) -> Option<String> {
+    println!("{:?}", request);
+    match request {
+        Some(Request::GET { path, user_agent }) => get_response(path, dir_path, user_agent),
+        Some(Request::POST { path, body }) => post_response(path, dir_path, body),
         _ => None,
     }
 }
@@ -100,7 +115,7 @@ fn handle_connection(mut stream: TcpStream, dir_path: &String) {
         .map(|line| line.unwrap())
         .take_while(|line| !line.is_empty())
         .collect();
-    let response = match make_responce(parse_path(&request), dir_path) {
+    let response = match make_response(parse_request(&request), dir_path) {
         Some(_response) => _response,
         None => String::from("HTTP/1.1 404 Not Found\r\n\r\n"),
     };
@@ -114,9 +129,7 @@ fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
     let dir_path: String = env::args().nth(2).unwrap_or_default();
-
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
-
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
