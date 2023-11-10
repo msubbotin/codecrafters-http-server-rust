@@ -1,4 +1,4 @@
-use std::thread;
+use std::{env, fs, thread};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -43,7 +43,7 @@ fn parse_path(lines: &Vec<String>) -> Option<Request> {
     None
 }
 
-fn make_responce(request: Option<Request>) -> Option<String> {
+fn make_responce(request: Option<Request>, dir_path: &String) -> Option<String> {
     println!("{:?}", request);
     match request {
         Some(Request::GET { path, user_agent }) => {
@@ -69,11 +69,18 @@ fn make_responce(request: Option<Request>) -> Option<String> {
                 }
             } else if path.starts_with("files") {
                 match path.split_once('/') {
-                    Some(("files", other)) => Some(format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
-                    other.len(),
-                    other
-                )),
+                    Some(("files", other)) => {
+                        if let Ok(_content) = fs::read_to_string(format!("{}/{}", dir_path, other))
+                        {
+                            Some(format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}\r\n\r\n",
+                                _content.len(),
+                                _content
+                            ))
+                        } else {
+                            None
+                        }
+                    }
                     None => None,
                     _ => None,
                 }
@@ -87,13 +94,13 @@ fn make_responce(request: Option<Request>) -> Option<String> {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream, dir_path: &String) {
     let request: Vec<String> = BufReader::new(&stream)
         .lines()
         .map(|line| line.unwrap())
         .take_while(|line| !line.is_empty())
         .collect();
-    let response = match make_responce(parse_path(&request)) {
+    let response = match make_responce(parse_path(&request), dir_path) {
         Some(_response) => _response,
         None => String::from("HTTP/1.1 404 Not Found\r\n\r\n"),
     };
@@ -106,13 +113,15 @@ fn handle_connection(mut stream: TcpStream) {
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
+    let dir_path: String = env::args().nth(2).unwrap_or_default();
 
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                thread::spawn(|| handle_connection(_stream));
+                let val = dir_path.clone();
+                thread::spawn(move || handle_connection(_stream, &val));
             }
             Err(e) => {
                 println!("error: {}", e);
