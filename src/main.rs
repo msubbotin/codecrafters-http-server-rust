@@ -67,11 +67,12 @@ fn ok_response(content: String, content_type: &str) -> Option<String> {
 fn get_response(path: String, dir_path: &String, user_agent: Option<String>) -> Option<String> {
     if path.is_empty() {
         return ok_response(String::new(), "text/plain");
+    } else if path.starts_with("user-agent") {
+        return ok_response(user_agent.unwrap_or_default(), "text/plain");
     }
 
     match path.split_once('/') {
         Some(("echo", other)) => ok_response(other.to_string(), "text/plain"),
-        Some(("user-agent", _)) => ok_response(user_agent.unwrap_or_default(), "text/plain"),
         Some(("files", file_name)) => {
             let file = fs::read_to_string(format!("{}/{}", dir_path, file_name));
             if let Ok(_content) = file {
