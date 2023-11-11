@@ -1,42 +1,39 @@
+use itertools::Itertools;
 use std::fs::File;
-use std::io::Read;
 use std::{env, fs, thread};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
 };
 
-use itertools::Itertools;
-use nom::AsBytes;
 #[derive(Debug)]
 enum Request {
     GET {
         path: String,
-        user_agent: Option<String>,
+        user_agent: String,
     },
     POST {
         path: String,
-        body: Vec<u8>,
+        user_agent: String,
+        body: String,
     },
 }
-
-fn parse_request(stream: &mut TcpStream) -> Option<Request> {
-    let reader = BufReader::new(stream.try_clone().unwrap());
-
-    let lines: Vec<String> = reader
+fn parse_head(head: &str) -> (String, String, String) {
+    let lines: Vec<String> = head
         .lines()
-        .map(|line| line.unwrap())
         .take_while(|line| !line.is_empty())
+        .map_into()
         .collect();
 
-    println!("lines: {:?}", lines);
-    let user_agent: Option<String> = lines
+    // println!("lines: {:?}", lines);
+    let user_agent: String = lines
         .iter()
         .filter(|line| line.starts_with("User-Agent"))
         .map(|line| line.split_whitespace())
         .flatten()
         .map_into()
-        .nth(1);
+        .nth(1)
+        .unwrap_or_default();
 
     let request_path: Vec<&str> = lines
         .first()
@@ -45,33 +42,32 @@ fn parse_request(stream: &mut TcpStream) -> Option<Request> {
 
     if let [type_request, _path] = request_path.as_slice()[..2] {
         let path = String::from(_path.split_once('/').unwrap_or_default().1);
-        return match type_request {
-            "GET" => Some(Request::GET {
-                path: String::from(path),
-                user_agent,
-            }),
-            "POST" => {
-                let body_length: usize = lines
-                    .iter()
-                    .filter(|line| line.starts_with("Content-Length"))
-                    .map(|line| line.split_whitespace())
-                    .flatten()
-                    .map(|value| value.parse::<usize>().unwrap())
-                    .nth(1)
-                    .unwrap_or_default();
-                let mut buffer = vec![0; body_length];
-                let mut reader = BufReader::new(stream);
-                reader.read_exact(&mut buffer).unwrap(); //New Vector with size of Content
+        return (String::from(type_request), path, user_agent);
+    }
+    return (String::default(), request_path.join(""), user_agent);
+}
 
-                Some(Request::POST {
-                    path: String::from(path),
-                    body: buffer,
-                })
-            }
+fn parse_request(stream: &mut TcpStream) -> Option<Request> {
+    let received: Vec<u8> = BufReader::new(stream)
+        .fill_buf()
+        .unwrap_or_default()
+        .to_vec();
+    let full_request = String::from_utf8(received).unwrap_or_default();
+
+    if let Some((head, body)) = full_request.split_once("\r\n\r\n") {
+        let (type_request, path, user_agent) = parse_head(head);
+        return match type_request.as_str() {
+            "GET" => Some(Request::GET { path, user_agent }),
+            "POST" => Some(Request::POST {
+                path,
+                user_agent,
+                body: String::from(body),
+            }),
             _ => None,
         };
+    } else {
+        return None;
     }
-    None
 }
 
 fn ok_response(content: String, content_type: &str) -> Option<String> {
@@ -88,11 +84,11 @@ fn ok_response(content: String, content_type: &str) -> Option<String> {
     Some(responce)
 }
 
-fn get_response(path: String, dir_path: &String, user_agent: Option<String>) -> Option<String> {
+fn get_response(path: String, dir_path: &String, user_agent: String) -> Option<String> {
     if path.is_empty() {
         return ok_response(String::new(), "text/plain");
     } else if path.starts_with("user-agent") {
-        return ok_response(user_agent.unwrap_or_default(), "text/plain");
+        return ok_response(user_agent, "text/plain");
     }
 
     match path.split_once('/') {
@@ -109,16 +105,19 @@ fn get_response(path: String, dir_path: &String, user_agent: Option<String>) -> 
     }
 }
 
-fn post_response(path: String, dir_path: &String, body: Vec<u8>) -> Option<String> {
+fn post_response(path: String, dir_path: &String, body: String) -> Option<String> {
     match path.split_once('/') {
         Some(("files", file_name)) => {
-            let file = File::create(format!("{}/{}", dir_path, file_name));
-            if let Err(_) = file.unwrap().write_all(body.as_bytes()) {
-                None
+            if let Ok(mut file) = File::create(format!("{}/{}", dir_path, file_name)) {
+                if let Err(_) = file.write_all(body.as_bytes()) {
+                    None
+                } else {
+                    Some(String::from(
+                        "HTTP/1.1 201 OK\r\nContent-Type: text/plain\r\n\r\n",
+                    ))
+                }
             } else {
-                Some(String::from(
-                    "HTTP/1.1 201 OK\r\nContent-Type: text/plain\r\n\r\n",
-                ))
+                None
             }
         }
         _ => None,
@@ -129,7 +128,11 @@ fn make_response(request: Option<Request>, dir_path: &String) -> Option<String> 
     println!("{:?}", request);
     match request {
         Some(Request::GET { path, user_agent }) => get_response(path, dir_path, user_agent),
-        Some(Request::POST { path, body }) => post_response(path, dir_path, body),
+        Some(Request::POST {
+            path,
+            body,
+            user_agent,
+        }) => post_response(path, dir_path, body),
         _ => None,
     }
 }
