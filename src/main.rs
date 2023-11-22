@@ -88,9 +88,16 @@ impl HttpRequest {
         }
         bail!("Can't parse request {}", full_request)
     }
-    fn path(&self) -> Vec<&str> {
-        let binding = self.path.iter().map(|s| s.as_str()).collect_vec();
-        binding
+
+    fn path_root(&self) -> &str {
+        if self.path.is_empty() {
+            ""
+        } else {
+            self.path[0].as_str()
+        }
+    }
+    fn path_other(&self) -> String {
+        self.path.iter().skip(1).join("/")
     }
 }
 
@@ -137,24 +144,12 @@ impl<'a> Display for HttpResponce<'a> {
 }
 
 fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<'a> {
-    // let binding = request.path.iter().map(|s| s.as_str()).collect_vec();
-    // let path: &[&str] = binding.as_slice();
-    match (request.request_type, request.path().as_slice()) {
-        (RequestType::GET, []) => HttpResponce::ok(None),
-        (RequestType::GET, ["user-agent", ..]) => {
-            HttpResponce::ok(Some(request.user_agent.to_string()))
-        }
-        (RequestType::GET, ["echo", other @ ..]) => {
-            let body: String = other.into_iter().map(|s| s.to_string()).join("/");
-            HttpResponce::ok(Some(body))
-        }
-        (RequestType::GET, ["files", other @ ..]) => {
-            let file_name: String = other
-                .into_iter()
-                .map(|s| s.to_string())
-                .join("/")
-                .to_string();
-            match fs::read_to_string(format!("{}/{}", dir_path, file_name)) {
+    match (request.request_type, request.path_root()) {
+        (RequestType::GET, "") => HttpResponce::ok(None),
+        (RequestType::GET, "user-agent") => HttpResponce::ok(Some(request.user_agent.to_string())),
+        (RequestType::GET, "echo") => HttpResponce::ok(Some(request.path_other())),
+        (RequestType::GET, "files") => {
+            match fs::read_to_string(format!("{}/{}", dir_path, request.path_other())) {
                 Ok(file) => HttpResponce {
                     content_type: "application/octet-stream",
                     ..HttpResponce::ok(Some(file))
@@ -162,13 +157,8 @@ fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<
                 Err(_) => HttpResponce::not_found(),
             }
         }
-        (RequestType::POST, ["files", other @ ..]) => {
-            let file_name: String = other
-                .into_iter()
-                .map(|s| s.to_string())
-                .join("/")
-                .to_string();
-            let file = File::create(format!("{}/{}", dir_path, file_name));
+        (RequestType::POST, "files") => {
+            let file = File::create(format!("{}/{}", dir_path, request.path_other()));
             match file.map(|mut file| file.write_all(request.body.as_bytes())) {
                 Ok(_) => HttpResponce {
                     status_code: "201 OK",
