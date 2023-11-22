@@ -1,166 +1,216 @@
+use anyhow::{bail, Result};
 use itertools::Itertools;
+use std::fmt::Display;
 use std::fs::File;
 use std::{env, fs, thread};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
 };
+#[derive(Debug)]
+struct HttpRequest {
+    pub request_type: RequestType,
+    user_agent: String,
+    path: Vec<String>,
+    body: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RequestType {
+    GET,
+    POST,
+}
+
+impl From<String> for RequestType {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            // expect only 2 request tupes GET and POST
+            "POST" => RequestType::POST,
+            _ => RequestType::GET,
+        }
+    }
+}
+
+impl HttpRequest {
+    fn try_new(stream: &mut TcpStream) -> Result<HttpRequest> {
+        let received: Vec<u8> = BufReader::new(stream)
+            .fill_buf()
+            .unwrap_or_default()
+            .to_vec();
+
+        // convert to utf8 String
+        let full_request: String = String::from_utf8(received)?;
+
+        // parse to get request_type, path, vesion, user_agent and body
+        if let Some((head, body)) = full_request.split_once("\r\n\r\n") {
+            //request_type, path, vesion
+            let first_line: Vec<String> = head
+                .split("\r\n")
+                .collect_vec()
+                // it always the first line
+                .first()
+                .map(|line| line.split_whitespace().collect_vec())
+                .unwrap()
+                .iter()
+                .map(|s| s.to_string())
+                .collect_vec();
+            // need to be always
+            println!("First line: {:?}", first_line);
+            let request_type = first_line.get(0).unwrap().to_string();
+            // need to be always
+            // skip 1 because the first element always is empty
+            let path: Vec<String> = first_line
+                .get(1)
+                .unwrap()
+                .to_string()
+                .split("/")
+                .map_into()
+                .skip(1)
+                .collect_vec();
+
+            let user_agent: String = head
+                .split("\r\n")
+                .collect_vec()
+                // it always the third line
+                .get(2)
+                .map(|line| line.split_whitespace().collect_vec())
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .to_string();
+
+            return Ok(HttpRequest {
+                request_type: request_type.into(),
+                user_agent: user_agent,
+                path: path,
+                body: body.to_string(),
+            });
+        }
+        bail!("Can't parse request {}", full_request)
+    }
+    fn path(&self) -> Vec<&str> {
+        let binding = self.path.iter().map(|s| s.as_str()).collect_vec();
+        binding
+    }
+}
 
 #[derive(Debug)]
-enum Request {
-    GET {
-        path: String,
-        user_agent: String,
-    },
-    POST {
-        path: String,
-        user_agent: String,
-        body: String,
-    },
+struct HttpResponce<'a> {
+    version: &'a str,
+    status_code: &'a str,
+    content_type: &'a str,
+    body: Option<String>,
 }
-fn parse_head(head: &str) -> (String, String, String) {
-    let lines: Vec<String> = head
-        .lines()
-        .take_while(|line| !line.is_empty())
-        .map_into()
-        .collect();
 
-    // println!("lines: {:?}", lines);
-    let user_agent: String = lines
-        .iter()
-        .filter(|line| line.starts_with("User-Agent"))
-        .map(|line| line.split_whitespace())
-        .flatten()
-        .map_into()
-        .nth(1)
-        .unwrap_or_default();
-
-    let request_path: Vec<&str> = lines
-        .first()
-        .map(|line| line.split_whitespace().collect_vec())
-        .unwrap_or_default();
-
-    if let [type_request, _path] = request_path.as_slice()[..2] {
-        let path = String::from(_path.split_once('/').unwrap_or_default().1);
-        return (String::from(type_request), path, user_agent);
+impl<'a> HttpResponce<'a> {
+    fn ok(body: Option<String>) -> Self {
+        Self {
+            version: "HTTP/1.1",
+            status_code: "200 OK",
+            content_type: "text/plain",
+            body: body,
+        }
     }
-    return (String::default(), request_path.join(""), user_agent);
+    fn not_found() -> Self {
+        Self {
+            version: "HTTP/1.1",
+            status_code: "404 Not Found",
+            content_type: "text/plain",
+            body: None,
+        }
+    }
 }
 
-fn parse_request(stream: &mut TcpStream) -> Option<Request> {
-    let received: Vec<u8> = BufReader::new(stream)
-        .fill_buf()
-        .unwrap_or_default()
-        .to_vec();
-    let full_request = String::from_utf8(received).unwrap_or_default();
-
-    if let Some((head, body)) = full_request.split_once("\r\n\r\n") {
-        let (type_request, path, user_agent) = parse_head(head);
-        return match type_request.as_str() {
-            "GET" => Some(Request::GET { path, user_agent }),
-            "POST" => Some(Request::POST {
-                path,
-                user_agent,
-                body: String::from(body),
-            }),
-            _ => None,
+impl<'a> Display for HttpResponce<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let content_length = self.body.as_ref().unwrap_or(&String::default()).len();
+        let body: String = match self.body.as_ref() {
+            Some(value) => format!("{}\r\n\r\n", value),
+            None => String::from(""),
         };
-    } else {
-        return None;
+        write!(
+            f,
+            "{} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+            self.version, self.status_code, self.content_type, content_length, body
+        )
     }
 }
 
-fn ok_response(content: String, content_type: &str) -> Option<String> {
-    let mut responce = String::new();
-    responce.push_str("HTTP/1.1 200 OK\r\nContent-Type: ");
-    responce.push_str(content_type);
-    responce.push_str("\r\nContent-Length: ");
-    responce.push_str(content.len().to_string().as_str());
-    if content.len() != 0 {
-        responce.push_str("\r\n\r\n");
-        responce.push_str(content.as_str());
-    }
-    responce.push_str("\r\n\r\n");
-    Some(responce)
-}
-
-fn get_response(path: String, dir_path: &String, user_agent: String) -> Option<String> {
-    if path.is_empty() {
-        return ok_response(String::new(), "text/plain");
-    } else if path.starts_with("user-agent") {
-        return ok_response(user_agent, "text/plain");
-    }
-
-    match path.split_once('/') {
-        Some(("echo", other)) => ok_response(other.to_string(), "text/plain"),
-        Some(("files", file_name)) => {
-            let file = fs::read_to_string(format!("{}/{}", dir_path, file_name));
-            if let Ok(_content) = file {
-                ok_response(_content, "application/octet-stream")
-            } else {
-                None
+fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<'a> {
+    // let binding = request.path.iter().map(|s| s.as_str()).collect_vec();
+    // let path: &[&str] = binding.as_slice();
+    match (request.request_type, request.path().as_slice()) {
+        (RequestType::GET, []) => HttpResponce::ok(None),
+        (RequestType::GET, ["user-agent", ..]) => {
+            HttpResponce::ok(Some(request.user_agent.to_string()))
+        }
+        (RequestType::GET, ["echo", other @ ..]) => {
+            let body: String = other.into_iter().map(|s| s.to_string()).join("/");
+            HttpResponce::ok(Some(body))
+        }
+        (RequestType::GET, ["files", other @ ..]) => {
+            let file_name: String = other
+                .into_iter()
+                .map(|s| s.to_string())
+                .join("/")
+                .to_string();
+            match fs::read_to_string(format!("{}/{}", dir_path, file_name)) {
+                Ok(file) => HttpResponce {
+                    content_type: "application/octet-stream",
+                    ..HttpResponce::ok(Some(file))
+                },
+                Err(_) => HttpResponce::not_found(),
             }
         }
-        _ => None,
-    }
-}
-
-fn post_response(path: String, dir_path: &String, body: String) -> Option<String> {
-    match path.split_once('/') {
-        Some(("files", file_name)) => {
-            if let Ok(mut file) = File::create(format!("{}/{}", dir_path, file_name)) {
-                if let Err(_) = file.write_all(body.as_bytes()) {
-                    None
-                } else {
-                    Some(String::from(
-                        "HTTP/1.1 201 OK\r\nContent-Type: text/plain\r\n\r\n",
-                    ))
-                }
-            } else {
-                None
+        (RequestType::POST, ["files", other @ ..]) => {
+            let file_name: String = other
+                .into_iter()
+                .map(|s| s.to_string())
+                .join("/")
+                .to_string();
+            let file = File::create(format!("{}/{}", dir_path, file_name));
+            match file.map(|mut file| file.write_all(request.body.as_bytes())) {
+                Ok(_) => HttpResponce {
+                    status_code: "201 OK",
+                    ..HttpResponce::ok(None)
+                },
+                Err(_) => HttpResponce::not_found(),
             }
         }
-        _ => None,
+        _ => HttpResponce::not_found(),
     }
 }
 
-fn make_response(request: Option<Request>, dir_path: &String) -> Option<String> {
-    println!("{:?}", request);
-    match request {
-        Some(Request::GET { path, user_agent }) => get_response(path, dir_path, user_agent),
-        Some(Request::POST {
-            path,
-            body,
-            user_agent,
-        }) => post_response(path, dir_path, body),
-        _ => None,
-    }
-}
+fn request_processor(stream: &mut TcpStream, dir_path: &str) {
+    println!("Get a new request.");
+    // read all information from stream
 
-fn handle_connection(mut stream: TcpStream, dir_path: &String) {
-    let response = match make_response(parse_request(&mut stream), dir_path) {
-        Some(_response) => _response,
-        None => String::from("HTTP/1.1 404 Not Found\r\n\r\n"),
+    let response: HttpResponce = match HttpRequest::try_new(stream) {
+        Ok(request) => request_mapping(request, dir_path),
+        Err(_) => HttpResponce::not_found(),
     };
 
-    if let Err(e) = stream.write_all(response.as_bytes()) {
+    if let Err(e) = stream.write_all(response.to_string().as_bytes()) {
         println!("Error stream writer: {}", e);
+    } else {
+        println!("Request process worked fine.");
     }
 }
 
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
+    // parse dir folder name from args
     let dir_path: String = env::args().nth(2).unwrap_or_default();
+
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                let val = dir_path.clone();
-                thread::spawn(move || handle_connection(_stream, &val));
+                let dir_path_clone = dir_path.clone();
+                thread::spawn(move || request_processor(&mut _stream, &dir_path_clone));
             }
             Err(e) => {
-                println!("error: {}", e);
+                println!("Can't get stream from listener: {}", e);
             }
         }
     }
