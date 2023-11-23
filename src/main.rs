@@ -152,9 +152,6 @@ impl<'a> Display for HttpResponce<'a> {
 }
 
 fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<'a> {
-    println!("path: {}", request.path);
-    println!("root: {}", request.path_root());
-    println!("other: {}", request.path_other());
     match (request.request_type, request.path_root()) {
         (RequestType::GET, "") => HttpResponce::ok(None),
         (RequestType::GET, "user-agent") => HttpResponce::ok(Some(request.user_agent.to_string())),
