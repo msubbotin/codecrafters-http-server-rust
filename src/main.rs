@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use itertools::Itertools;
+use std::borrow::Cow;
 use std::fmt::Display;
 use std::fs::File;
 use std::{env, fs, thread};
@@ -7,32 +8,20 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
 };
-#[derive(Debug)]
-struct HttpRequest {
+
+const LINE_DELIMITER: &str = "\r\n";
+const BODY_DELIMITER: &str = "\r\n\r\n";
+
+#[derive(Debug, Clone)]
+struct HttpRequest<'a> {
     pub request_type: RequestType,
-    user_agent: String,
-    path: Vec<String>,
-    body: String,
+    user_agent: Cow<'a, str>,
+    path: Cow<'a, str>,
+    body: Cow<'a, str>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum RequestType {
-    GET,
-    POST,
-}
-
-impl From<String> for RequestType {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            // expect only 2 request tupes GET and POST
-            "POST" => RequestType::POST,
-            _ => RequestType::GET,
-        }
-    }
-}
-
-impl HttpRequest {
-    fn try_new(stream: &mut TcpStream) -> Result<HttpRequest> {
+impl<'a> HttpRequest<'a> {
+    fn try_new(stream: &TcpStream) -> Result<HttpRequest<'a>> {
         let received: Vec<u8> = BufReader::new(stream)
             .fill_buf()
             .unwrap_or_default()
@@ -42,10 +31,10 @@ impl HttpRequest {
         let full_request: String = String::from_utf8(received)?;
 
         // parse to get request_type, path, vesion, user_agent and body
-        if let Some((head, body)) = full_request.split_once("\r\n\r\n") {
+        if let Some((head, body)) = full_request.split_once(BODY_DELIMITER) {
             //request_type, path, vesion
             let first_line: Vec<String> = head
-                .split("\r\n")
+                .split(LINE_DELIMITER)
                 .collect_vec()
                 // it always the first line
                 .first()
@@ -55,21 +44,13 @@ impl HttpRequest {
                 .map(|s| s.to_string())
                 .collect_vec();
             // need to be always
-            println!("First line: {:?}", first_line);
-            let request_type = first_line.get(0).unwrap().to_string();
+            let request_type: &str = first_line.get(0).unwrap();
             // need to be always
             // skip 1 because the first element always is empty
-            let path: Vec<String> = first_line
-                .get(1)
-                .unwrap()
-                .to_string()
-                .split("/")
-                .map_into()
-                .skip(1)
-                .collect_vec();
+            let path = first_line.get(1).unwrap();
 
             let user_agent: String = head
-                .split("\r\n")
+                .split(LINE_DELIMITER)
                 .collect_vec()
                 // it always the third line
                 .get(2)
@@ -81,23 +62,41 @@ impl HttpRequest {
 
             return Ok(HttpRequest {
                 request_type: request_type.into(),
-                user_agent: user_agent,
-                path: path,
-                body: body.to_string(),
+                user_agent: user_agent.into(),
+                path: path.to_owned().into(),
+                body: body.to_owned().into(),
             });
         }
         bail!("Can't parse request {}", full_request)
     }
 
     fn path_root(&self) -> &str {
-        if self.path.is_empty() {
+        let value: Vec<&str> = self.path.split("/").skip(1).take(1).collect();
+        if value.is_empty() {
             ""
         } else {
-            self.path[0].as_str()
+            value[0]
         }
     }
     fn path_other(&self) -> String {
-        self.path.iter().skip(1).join("/")
+        let value: Vec<&str> = self.path.split("/").skip(2).collect();
+        value.join("/")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RequestType {
+    GET,
+    POST,
+}
+
+impl From<&str> for RequestType {
+    fn from(value: &str) -> RequestType {
+        match value {
+            // expect only 2 request tupes GET and POST
+            "POST" => RequestType::POST,
+            _ => RequestType::GET,
+        }
     }
 }
 
@@ -118,6 +117,15 @@ impl<'a> HttpResponce<'a> {
             body: body,
         }
     }
+
+    fn ok_201(body: Option<String>) -> Self {
+        Self {
+            version: "HTTP/1.1",
+            status_code: "201 OK",
+            content_type: "text/plain",
+            body: body,
+        }
+    }
     fn not_found() -> Self {
         Self {
             version: "HTTP/1.1",
@@ -132,18 +140,21 @@ impl<'a> Display for HttpResponce<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let content_length = self.body.as_ref().unwrap_or(&String::default()).len();
         let body: String = match self.body.as_ref() {
-            Some(value) => format!("{}\r\n\r\n", value),
+            Some(value) => format!("{}{}", value, BODY_DELIMITER),
             None => String::from(""),
         };
         write!(
             f,
-            "{} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-            self.version, self.status_code, self.content_type, content_length, body
+            "{} {}\r\nContent-Type: {}\r\nContent-Length: {}{}{}",
+            self.version, self.status_code, self.content_type, content_length, BODY_DELIMITER, body
         )
     }
 }
 
 fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<'a> {
+    println!("path: {}", request.path);
+    println!("root: {}", request.path_root());
+    println!("other: {}", request.path_other());
     match (request.request_type, request.path_root()) {
         (RequestType::GET, "") => HttpResponce::ok(None),
         (RequestType::GET, "user-agent") => HttpResponce::ok(Some(request.user_agent.to_string())),
@@ -160,10 +171,7 @@ fn request_mapping<'a>(request: HttpRequest, dir_path: &'a str) -> HttpResponce<
         (RequestType::POST, "files") => {
             let file = File::create(format!("{}/{}", dir_path, request.path_other()));
             match file.map(|mut file| file.write_all(request.body.as_bytes())) {
-                Ok(_) => HttpResponce {
-                    status_code: "201 OK",
-                    ..HttpResponce::ok(None)
-                },
+                Ok(_) => HttpResponce::ok_201(None),
                 Err(_) => HttpResponce::not_found(),
             }
         }
